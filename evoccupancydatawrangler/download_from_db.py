@@ -20,7 +20,7 @@ flags.DEFINE_string('dt', '15m', 'Sampling time')
 flags.DEFINE_string('t_start', '2024-05-14', 'Download start time')
 flags.DEFINE_string('t_end', '2024-05-15', 'Download stop time')
 
-
+flags.DEFINE_string('db_conf_path', 'conf/dbs_conf.json', 'configuration file for the database')
 # BBOX Swiss coordinates
 # lat_max, lon_max = 47.808464, 10.492294
 # lat_min, lon_min = 45.817920, 5.956085
@@ -155,16 +155,38 @@ def query_status(df_client, db_conf, lat_min, lat_max, lon_min, lon_max, t_start
     return df
 
 
-def get_client(cfg_path='conf/dbs_conf.json'):
-    with open(cfg_path) as f:
-        db_conf = json.load(f)['evs']
+def get_client(cfg_path=None, db_conf=None):
+    if db_conf is None:
+        if cfg_path is None:
+            cfg_path = 'conf/dbs_conf.json'
+        with open(cfg_path) as f:
+            db_conf = json.load(f)['evs']
     client = DataFrameClient(host=db_conf['host'], port=db_conf['port'], password=db_conf['password'],
                     username=db_conf['user'], database=db_conf['database'], ssl=db_conf['ssl'])
     return client, db_conf
 
 
-def get_data(dt, t_start, t_end, lat_min, lat_max, lon_min, lon_max, raw, save_data=True, save_dir=''):
-    df_client, db_conf = get_client()
+def get_data(dt, t_start, t_end, lat_min, lat_max, lon_min, lon_max, raw, save_data=True, save_dir='./data',
+             db_conf=None, db_conf_path='conf/dbs_conf.json'):
+    """
+    :param dt: time interval
+    :param t_start: start time
+    :param t_end: end time
+    :param lat_min: minimum latitude
+    :param lat_max: maximum latitude
+    :param lon_min: minimum longitude
+    :param lon_max: maximum longitude
+    :param raw: If true, this will download the status codes. If false, it will download the number of times the status
+                was 0 or 1 in the time interval dt (available and occupied, respectively). WARNING: If raw=TRUE this
+                must be call at the maximum frequency of the data dt = 1m otherwise you\'ll get averages of the status
+                (status codes are 0=AVAILABLE 1=OCCUPIED -1=NOT_IDENTIFIABLE -2=UNKNOWN -3=OUTOFSERVICE
+    :param save_data:  If true, save the data to a pickle file
+    :param save_dir:  directory in which to save the raw datasets
+    :param db_conf:  dict with the database configuration, if not None it will be used instead of the db_conf_path
+    :param db_conf_path:  path to the database configuration file
+    :return:
+    """
+    df_client, db_conf = get_client(cfg_path=db_conf_path, db_conf=db_conf)
     t_start = pd.Timestamp(t_start).isoformat() + "Z"
     t_end = pd.Timestamp(t_end).isoformat() + "Z"
     raw = raw
@@ -197,7 +219,7 @@ def get_data(dt, t_start, t_end, lat_min, lat_max, lon_min, lon_max, raw, save_d
             makedirs(save_dir)
         now = pd.Timestamp.now()
         data.to_pickle(join(save_dir, 'ev_occupancy_{}.zip'.format(now.strftime('%Y-%m-%d--%H-%M-%S'))))
-        pd.DataFrame(pars, index = [0]).to_pickle(join(save_dir, 'pars_{}.pk'.format(now.strftime('%Y-%m-%d--%H-%M-%S'))))
+        pd.DataFrame(pars, index=[0]).to_pickle(join(save_dir, 'pars_{}.pk'.format(now.strftime('%Y-%m-%d--%H-%M-%S'))))
     return data
 
 
