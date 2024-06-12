@@ -18,7 +18,7 @@ setuptools.setup(
         "License :: OSI Approved :: GNUv3",
         "Operating System :: OS Independent",
     ],
-    install_requires=["absl - py >= 2.1.0",
+    install_requires=["absl-py >= 2.1.0",
                       "influxdb >= 5.3.2",
                       "matplotlib >= 3.9.0",
                       "numpy >= 1.26.4",
