@@ -29,11 +29,12 @@ flags.DEFINE_float('lat_max', 46.03, 'latitude max')
 flags.DEFINE_float('lon_min', 8.9, 'longitude min')
 flags.DEFINE_float('lon_max', 8.96, 'longitude max')
 
-flags.DEFINE_boolean('raw', False, 'If true, this will download the status codes. If false, it will download the number '
-                                   'of times the status was 0 or 1 in the time interval dt (available and occupied, '
-                                   'respectively). WARNING: If raw=TRUE this must be call at the maximum frequency of '
-                                   'the data dt = 1m otherwise you\'ll get averages of the status (status codes are '
-                                   '0=AVAILABLE 1=OCCUPIED -1=NOT_IDENTIFIABLE -2=UNKNOWN -3=OUTOFSERVICE')
+flags.DEFINE_boolean('raw', False, 'If true, this will download the status codes. If false, '
+                                   'it will download the number of times the status was 0 or 1 in the time interval dt '
+                                   '(available and occupied, respectively). WARNING: If raw=TRUE this must be call at '
+                                   'the maximum frequency of the data dt = 1m otherwise you\'ll get averages of the '
+                                   'status (status codes are 0=AVAILABLE 1=OCCUPIED -1=NOT_IDENTIFIABLE -2=UNKNOWN '
+                                   '-3=OUTOFSERVICE')
 FLAGS = flags.FLAGS
 
 
@@ -78,7 +79,7 @@ def query_raw(df_client, db_conf, lat_min, lat_max, lon_min, lon_max, t_start, t
 
     # query one day at a time
     results_list = []
-    for t in tqdm(pd.date_range(t_start, t_end, freq='D')):
+    for t in tqdm(pd.date_range(t_start, t_end, freq='D'), desc='Downloading data day by day'):
         t_start = t.tz_localize(None).isoformat() + "Z"
         t_end = (t + pd.to_timedelta('1d')).tz_localize(None).isoformat() + "Z"
 
@@ -124,7 +125,8 @@ def query_status(df_client, db_conf, lat_min, lat_max, lon_min, lon_max, t_start
 
     # query one day at a time
     results_list = []
-    for t in tqdm(pd.date_range(t_start, t_end, freq='D')):
+    for t in tqdm(pd.date_range(t_start, t_end, freq='D'),
+                  desc='Downloading data day by day, for state {}'.format(state)):
         t_start = t.tz_localize(None).isoformat() + "Z"
         t_end = (t + pd.to_timedelta('1d')).tz_localize(None).isoformat() + "Z"
 
@@ -161,24 +163,25 @@ def get_client(cfg_path='conf/dbs_conf.json'):
     return client, db_conf
 
 
-def get_data(pars, save_data=True, save_dir=''):
+def get_data(dt, t_start, t_end, lat_min, lat_max, lon_min, lon_max, raw, save_data=True, save_dir=''):
     df_client, db_conf = get_client()
-    t_start = pd.Timestamp(pars['t_start']).isoformat() + "Z"
-    t_end = pd.Timestamp(pars['t_end']).isoformat() + "Z"
-    raw = pars['raw']
+    t_start = pd.Timestamp(t_start).isoformat() + "Z"
+    t_end = pd.Timestamp(t_end).isoformat() + "Z"
+    raw = raw
 
 
     if raw:
-        if pars['dt'] != '1m':
+        if dt != '1m':
             ValueError(
-                'This function must be called at the maximum frequency of the data = 1 minute, otherwise you\'ll get averages of the status')
-        data = query_raw(df_client, db_conf, pars['lat_min'], pars['lat_max'], pars['lon_min'], pars['lon_max'],
-                         t_start, t_end, dt=pars['dt'])
+                'This function must be called at the maximum frequency of the data = 1 minute, otherwise '
+                'you\'ll get averages of the status')
+        data = query_raw(df_client, db_conf, lat_min, lat_max, lon_min, lon_max,
+                         t_start, t_end, dt=dt)
     else:
-        available = query_status(df_client, db_conf, pars['lat_min'], pars['lat_max'], pars['lon_min'], pars['lon_max'],
-                                 t_start, t_end, dt=pars['dt'], state=0)
-        occupied = query_status(df_client, db_conf, pars['lat_min'], pars['lat_max'], pars['lon_min'], pars['lon_max'],
-                                 t_start, t_end, dt=pars['dt'], state=1)
+        available = query_status(df_client, db_conf, lat_min, lat_max, lon_min, lon_max,
+                                 t_start, t_end, dt=dt, state=0)
+        occupied = query_status(df_client, db_conf, lat_min, lat_max, lon_min, lon_max,
+                                 t_start, t_end, dt=dt, state=1)
         available.rename(columns={'count': 'available'}, inplace=True)
         occupied.rename(columns={'count': 'occupied'}, inplace=True)
 
@@ -188,6 +191,8 @@ def get_data(pars, save_data=True, save_dir=''):
         data[['occupied', 'available']] = data[['occupied', 'available']].astype(int)
 
     if save_data:
+        pars = {'lat_min': lat_min, 'lat_max': lat_max, 'lon_min': lon_min, 'lon_max': lon_max,
+                't_start': t_start, 't_end': t_end, 'dt': dt, 'raw': raw}
         # if save_dir doesn't exist, create it
         if not exists(save_dir):
             makedirs(save_dir)
@@ -214,10 +219,8 @@ def plot_sample(data, n_max=1000):
 
 
 def main(unused_argv) -> None:
-
-    pars = {'lat_min': FLAGS.lat_min, 'lat_max': FLAGS.lat_max, 'lon_min': FLAGS.lon_min, 'lon_max': FLAGS.lon_max,
-                         't_start': FLAGS.t_start, 't_end': FLAGS.t_end, 'dt':FLAGS.dt, 'raw': FLAGS.raw}
-    data = get_data(pars, save_data=True, save_dir=FLAGS.save_dir)
+    data = get_data(FLAGS.dt, FLAGS.t_start, FLAGS.t_end, FLAGS.lat_min, FLAGS.lat_max, FLAGS.lon_min, FLAGS.lon_max,
+                    FLAGS.raw, save_data=True, save_dir=FLAGS.save_dir)
     plot_sample(data)
 
 
