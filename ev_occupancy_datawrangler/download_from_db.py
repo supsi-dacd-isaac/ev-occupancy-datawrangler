@@ -169,7 +169,6 @@ def get_data(dt, t_start, t_end, lat_min, lat_max, lon_min, lon_max, raw, save_d
     t_end = pd.Timestamp(t_end).isoformat() + "Z"
     raw = raw
 
-
     if raw:
         if dt != '1m':
             ValueError(
