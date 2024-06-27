@@ -95,7 +95,7 @@ def query_raw(df_client, db_conf, lat_min, lat_max, lon_min, lon_max, t_start, t
                  )
 
         results = do_query(query, df_client)
-        if results is None:
+        if results is None or results == {}:
             continue
         else:
             results_list.append(results_to_df(results))
@@ -143,7 +143,7 @@ def query_status(df_client, db_conf, lat_min, lat_max, lon_min, lon_max, t_start
                  )
 
         results = do_query(query, df_client)
-        if results is None:
+        if results is None or results == {}:
             continue
         else:
             results_list.append(results_to_df(results))
