@@ -9,6 +9,9 @@ from absl import app
 from absl import flags
 from os.path import join, exists
 from os import makedirs
+import geopandas as gpd
+from evoccupancydatawrangler.mapgeoadmin_info_getter import query_stations, get_number_of_closest_stations_and_chargers
+
 
 
 urllib3.disable_warnings()
@@ -60,6 +63,75 @@ def results_to_df(results):
     combined_df.rename(columns={'index': 'time'}, inplace=True)
     return combined_df
 
+def get_key_lat_long_map(t_start_str, lat_min, lat_max, lon_min, lon_max):
+    df_client, db_conf = get_client()
+    # retrieve lat and long
+    t_end_2 = (pd.Timestamp(t_start_str) + pd.to_timedelta('15min')).isoformat() + "Z"
+    query = (f"SELECT time, latitude AS lat, longitude AS long "
+             f"FROM {db_conf['measurement']} "
+             f"WHERE time>='{t_start_str}' "
+             f"AND time<='{t_end_2}' "
+             f"AND latitude>={lat_min} "
+             f"AND latitude<={lat_max} "
+             f"AND longitude>={lon_min} "
+             f"AND longitude<={lon_max}"
+             f"GROUP BY evse_id"
+             )
+
+    results = do_query(query, df_client)
+    # obtain the map key->(lat, long)
+    kml_map = results_to_df(results).drop_duplicates(subset=['key'], keep='first')
+    kml_map = kml_map.set_index('key')[['lat', 'long']]
+    return kml_map
+
+def get_number_of_closest_stations_and_chargers(lat_long, max_dist=1):
+    lat_long_gp = gpd.GeoDataFrame(geometry=gpd.points_from_xy(lat_long.long, lat_long.lat), crs='EPSG:4326')
+    lat_long_gp.to_crs('EPSG:21781', inplace=True)
+    lat_long_gp_unique = gpd.GeoDataFrame(geometry=lat_long_gp.geometry.drop_duplicates(), crs='EPSG:21781')
+    n_close_points = lat_long_gp.apply(lambda point: np.sum((lat_long_gp_unique.geometry.distance(point.geometry) <= max_dist * 1e3) & (lat_long_gp_unique.geometry.distance(point.geometry) > 0)), axis=1)
+    n_close_chargers = lat_long_gp.apply(lambda point: np.sum((lat_long_gp.geometry.distance(point.geometry) <= max_dist * 1e3) & (lat_long_gp.geometry.distance(point.geometry) > 0)), axis=1)
+    return pd.DataFrame({'n_close_points_{}_km'.format(max_dist): n_close_points.values,
+                         'n_close_chargers_{}_km'.format(max_dist): n_close_chargers.values}, index=lat_long.index)
+
+
+def add_metadata(df, t_start, lat_min, lat_max, lon_min, lon_max, radii, query_mapgeoadmin=False, save_path=None,
+                 get_n_close=False, get_population_density=False):
+    kml_map = get_key_lat_long_map(t_start, lat_min, lat_max, lon_min, lon_max)
+    df = pd.merge(df[[c for c in df.columns if c not in ['lat', 'long']]], kml_map, on='key')
+    kml_map = kml_map.loc[df.index]
+    unique_coords = kml_map.drop_duplicates()
+    unique_coords.reset_index(drop=True, inplace=True)
+
+    # -----------------------------------------------------------------------------------------------------------------
+    # ---------------- based on lat-long, retrieve additional metadata from map.geoadmin.ch ---------------------------
+    # -----------------------------------------------------------------------------------------------------------------
+
+    # retrieve how many chargers are present in the same location
+    chargers_per_coord = df.value_counts(['lat', 'long']).rename('chargers_at_station')
+    df = df.join(chargers_per_coord, on=['lat', 'long'])
+
+    # retrieve distance from the closest station
+    closest = unique_coords.copy().reset_index(drop=True)
+    closest_distances_gdf = gpd.GeoDataFrame(closest,
+                                             geometry=gpd.points_from_xy(unique_coords.long, unique_coords.lat),
+                                             crs='EPSG:4326')
+    closest_distances_gdf.to_crs('EPSG:21781', inplace=True)
+    tqdm.pandas(desc='Getting closest distances')
+    closest_distances_gdf['distance_to_closest_station'] = closest_distances_gdf.progress_apply(
+        lambda x: (x.geometry).distance(
+            closest_distances_gdf.geometry[~closest_distances_gdf['geometry'].isin([x.geometry])]).min(), axis=1)
+    df = pd.merge(df.reset_index(), closest_distances_gdf.reset_index(drop=True), on=['lat', 'long']).set_index('key')
+
+    if get_n_close:
+        # retrieve how many charging stations within radii
+        for radius in tqdm(radii, desc='Getting number of stations within radii'):
+            df = pd.concat([df, get_number_of_closest_stations_and_chargers(df[['lat', 'long']], max_dist=radius)], axis=1)
+    if get_population_density:
+        # retrieve population density and traffic within radii
+        data = query_stations(unique_coords, radii=radii, data_path=save_path, query_mapgeoadmin=query_mapgeoadmin)
+        df = pd.merge(df.reset_index(), data, on=['lat', 'long']).set_index('key')
+    df.dropna(inplace=True)
+    return df
 
 def query_raw(df_client, db_conf, lat_min, lat_max, lon_min, lon_max, t_start, t_end, dt='1m'):
     """
@@ -167,7 +239,7 @@ def get_client(cfg_path=None, db_conf=None):
 
 
 def get_data(dt, t_start, t_end, lat_min, lat_max, lon_min, lon_max, raw, save_data=True, save_dir='./data',
-             db_conf=None, db_conf_path='conf/dbs_conf.json'):
+             db_conf=None, db_conf_path='conf/dbs_conf.json', additional_savepath_str=''):
     """
     :param dt: time interval
     :param t_start: start time
@@ -184,6 +256,7 @@ def get_data(dt, t_start, t_end, lat_min, lat_max, lon_min, lon_max, raw, save_d
     :param save_dir:  directory in which to save the raw datasets
     :param db_conf:  dict with the database configuration, if not None it will be used instead of the db_conf_path
     :param db_conf_path:  path to the database configuration file
+    :param additional_savepath_str:  additional string to append to the save path
     :return:
     """
     df_client, db_conf = get_client(cfg_path=db_conf_path, db_conf=db_conf)
@@ -218,8 +291,8 @@ def get_data(dt, t_start, t_end, lat_min, lat_max, lon_min, lon_max, raw, save_d
         if not exists(save_dir):
             makedirs(save_dir)
         now = pd.Timestamp.now()
-        data.to_pickle(join(save_dir, 'ev_occupancy_{}.zip'.format(now.strftime('%Y-%m-%d--%H-%M-%S'))))
-        pd.DataFrame(pars, index=[0]).to_pickle(join(save_dir, 'pars_{}.pk'.format(now.strftime('%Y-%m-%d--%H-%M-%S'))))
+        data.to_pickle(join(save_dir, 'ev_occupancy_{}{}.zip'.format(now.strftime('%Y-%m-%d--%H-%M-%S'), additional_savepath_str)))
+        pd.DataFrame(pars, index=[0]).to_pickle(join(save_dir, 'pars_{}{}.pk'.format(now.strftime('%Y-%m-%d--%H-%M-%S'), additional_savepath_str)))
     return data
 
 
@@ -244,6 +317,9 @@ def main(unused_argv) -> None:
                     FLAGS.raw, save_data=True, save_dir=FLAGS.save_dir)
     plot_sample(data)
 
+    metadata_df = pd.DataFrame(data['key'].unique(), columns=['key'])
+    metadata_df.set_index('key', inplace=True)
+    metadata_df = add_metadata(metadata_df, FLAGS.t_start, FLAGS.lat_min, FLAGS.lat_max, FLAGS.lon_min, FLAGS.lon_max, radii=0)
 
 if __name__ == '__main__':
     app.run(main)
