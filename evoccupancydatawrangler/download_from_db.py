@@ -22,6 +22,7 @@ flags.DEFINE_string('dt', '15m', 'Sampling time')
 
 flags.DEFINE_string('t_start', '2024-05-14', 'Download start time')
 flags.DEFINE_string('t_end', '2024-05-15', 'Download stop time')
+flags.DEFINE_string('metadata_path', None, 'filepath for the metadata')
 
 flags.DEFINE_string('db_conf_path', 'conf/dbs_conf.json', 'configuration file for the database')
 # BBOX Swiss coordinates
@@ -31,6 +32,7 @@ flags.DEFINE_float('lat_min', 46.00, 'latitude min')
 flags.DEFINE_float('lat_max', 46.03, 'latitude max')
 flags.DEFINE_float('lon_min', 8.9, 'longitude min')
 flags.DEFINE_float('lon_max', 8.96, 'longitude max')
+
 
 flags.DEFINE_boolean('raw', False, 'If true, this will download the status codes. If false, '
                                    'it will download the number of times the status was 0 or 1 in the time interval dt '
@@ -63,25 +65,19 @@ def results_to_df(results):
     combined_df.rename(columns={'index': 'time'}, inplace=True)
     return combined_df
 
-def get_key_lat_long_map(t_start_str, lat_min, lat_max, lon_min, lon_max):
+def get_key_lat_long_map(metadata_path=None):
     df_client, db_conf = get_client()
     # retrieve lat and long
-    t_end_2 = (pd.Timestamp(t_start_str) + pd.to_timedelta('15min')).isoformat() + "Z"
-    query = (f"SELECT time, latitude AS lat, longitude AS long "
+    query = (f"SELECT LAST(latitude) AS lat, LAST(longitude) AS long "
              f"FROM {db_conf['measurement']} "
-             f"WHERE time>='{t_start_str}' "
-             f"AND time<='{t_end_2}' "
-             f"AND latitude>={lat_min} "
-             f"AND latitude<={lat_max} "
-             f"AND longitude>={lon_min} "
-             f"AND longitude<={lon_max}"
-             f"GROUP BY evse_id"
-             )
+             f"GROUP BY evse_id")
 
     results = do_query(query, df_client)
     # obtain the map key->(lat, long)
     kml_map = results_to_df(results).drop_duplicates(subset=['key'], keep='first')
     kml_map = kml_map.set_index('key')[['lat', 'long']]
+    if metadata_path is not None:
+        kml_map.to_pickle(metadata_path)
     return kml_map
 
 def get_number_of_closest_stations_and_chargers(lat_long, max_dist=1):
@@ -94,9 +90,12 @@ def get_number_of_closest_stations_and_chargers(lat_long, max_dist=1):
                          'n_close_chargers_{}_km'.format(max_dist): n_close_chargers.values}, index=lat_long.index)
 
 
-def add_metadata(df, t_start, lat_min, lat_max, lon_min, lon_max, radii, query_mapgeoadmin=False, save_path=None,
-                 get_n_close=False, get_population_density=False):
-    kml_map = get_key_lat_long_map(t_start, lat_min, lat_max, lon_min, lon_max)
+def add_metadata(df, radii, query_mapgeoadmin=False, save_path=None,
+                 get_n_close=False, get_population_density=False, metadata_path=None):
+    if metadata_path is not None:
+        kml_map = pd.read_pickle(metadata_path)
+    else:
+        kml_map = get_key_lat_long_map(metadata_path)
     df = pd.merge(df[[c for c in df.columns if c not in ['lat', 'long']]], kml_map, on='key')
     kml_map = kml_map.loc[df.index]
     unique_coords = kml_map.drop_duplicates()
@@ -319,7 +318,7 @@ def main(unused_argv) -> None:
 
     metadata_df = pd.DataFrame(data['key'].unique(), columns=['key'])
     metadata_df.set_index('key', inplace=True)
-    metadata_df = add_metadata(metadata_df, FLAGS.t_start, FLAGS.lat_min, FLAGS.lat_max, FLAGS.lon_min, FLAGS.lon_max, radii=0)
+    metadata_df = add_metadata(metadata_df, radii=0, metadata_path=FLAGS.metadata_path)
 
 if __name__ == '__main__':
     app.run(main)
