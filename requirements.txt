@@ -8,3 +8,5 @@ urllib3>=2.2.1
 geopandas>=1.0.1
 wget>=3.2
 pyarrow>=17.0.0
+sqlalchemy
+psycopg2

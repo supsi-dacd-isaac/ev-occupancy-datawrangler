@@ -11,7 +11,7 @@ from os.path import join, exists
 from os import makedirs
 import geopandas as gpd
 from evoccupancydatawrangler.mapgeoadmin_info_getter import query_stations, get_number_of_closest_stations_and_chargers
-
+import sqlalchemy as sa
 
 
 urllib3.disable_warnings()
@@ -22,7 +22,7 @@ flags.DEFINE_string('dt', '15m', 'Sampling time')
 
 flags.DEFINE_string('t_start', '2024-05-14', 'Download start time')
 flags.DEFINE_string('t_end', '2024-05-15', 'Download stop time')
-flags.DEFINE_string('metadata_path', None, 'filepath for the metadata')
+flags.DEFINE_string('kml_path', None, 'filepath for the metadata')
 
 flags.DEFINE_string('db_conf_path', 'conf/dbs_conf.json', 'configuration file for the database')
 # BBOX Swiss coordinates
@@ -65,7 +65,20 @@ def results_to_df(results):
     combined_df.rename(columns={'index': 'time'}, inplace=True)
     return combined_df
 
-def get_key_lat_long_map(metadata_path=None):
+def get_ev_operator():
+    SQLALCHEMY_URL = "postgresql://isaacadm:UavfYesUg5cKZB2r@isaac-db01.dacd.supsi.ch:5432/ev"
+    sql_client = sa.create_engine(SQLALCHEMY_URL)
+
+    query = f'''select distinct(c.external_id) as charger_id, o.external_id as operator_id, l.swiss_municipality
+                from charger c, "operator" o, "location" l 
+                where c.fk_id_location = l.id and l.fk_id_operator = o.id 
+                order by o.external_id'''
+
+    result = pd.read_sql_query(query, sql_client)
+
+    return result
+
+def get_key_lat_long_map(kml_path=None):
     df_client, db_conf = get_client()
     # retrieve lat and long
     query = (f"SELECT LAST(latitude) AS lat, LAST(longitude) AS long "
@@ -76,8 +89,8 @@ def get_key_lat_long_map(metadata_path=None):
     # obtain the map key->(lat, long)
     kml_map = results_to_df(results).drop_duplicates(subset=['key'], keep='first')
     kml_map = kml_map.set_index('key')[['lat', 'long']]
-    if metadata_path is not None:
-        kml_map.to_pickle(metadata_path)
+    if kml_path is not None:
+        kml_map.to_pickle(kml_path)
     return kml_map
 
 def get_number_of_closest_stations_and_chargers(lat_long, max_dist=1):
@@ -90,13 +103,20 @@ def get_number_of_closest_stations_and_chargers(lat_long, max_dist=1):
                          'n_close_chargers_{}_km'.format(max_dist): n_close_chargers.values}, index=lat_long.index)
 
 
+
 def add_metadata(df, radii, query_mapgeoadmin=False, save_path=None,
-                 get_n_close=False, get_population_density=False, metadata_path=None):
-    if metadata_path is not None:
-        kml_map = pd.read_pickle(metadata_path)
+                 get_n_close=False, get_population_density=False, kml_path=None):
+    if kml_path is not None:
+        kml_map = pd.read_pickle(kml_path)
     else:
-        kml_map = get_key_lat_long_map(metadata_path)
-    df = pd.merge(df[[c for c in df.columns if c not in ['lat', 'long']]], kml_map, on='key')
+        kml_map = get_key_lat_long_map(kml_path)
+        if kml_path is not None:
+            kml_map.to_pickle(kml_path)
+
+    operator_map = get_ev_operator()
+    metadata_df = pd.merge(kml_map, operator_map, left_index=True, right_on='charger_id').set_index('charger_id')
+    metadata_df.index.rename('key', inplace=True)
+    df = pd.merge(df[[c for c in df.columns if c not in ['lat', 'long']]], metadata_df, on='key')
     kml_map = kml_map.loc[df.index]
     unique_coords = kml_map.drop_duplicates()
     unique_coords.reset_index(drop=True, inplace=True)
@@ -318,7 +338,7 @@ def main(unused_argv) -> None:
 
     metadata_df = pd.DataFrame(data['key'].unique(), columns=['key'])
     metadata_df.set_index('key', inplace=True)
-    metadata_df = add_metadata(metadata_df, radii=0, metadata_path=FLAGS.metadata_path)
+    metadata_df = add_metadata(metadata_df, radii=0, kml_path=FLAGS.kml_path)
 
 if __name__ == '__main__':
     app.run(main)
